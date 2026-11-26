@@ -1,6 +1,6 @@
 # Modeldoe
 
-Modeldoe is a client-only React and Vite notebook for understanding how a person makes decisions. Keep a separate model for each person. Record their exact words, observed actions, decisions and context, or your own explicitly labeled inference.
+Modeldoe is a client-only notebook built with React, TypeScript, and Vite for understanding how a person makes decisions. Keep a separate model for each person. Record their exact words, observed actions, decisions and context, or your own explicitly labeled inference.
 
 ## Person profiles
 
@@ -32,7 +32,9 @@ The prediction is a hypothesis for the described situation, not access to anothe
 
 ## Local use
 
-Run `npm install`, then `npm run dev`. Use `npm run build` for a static production build. Profiles are stored in this browser's local storage. Clearing site data removes them. A fictional sample profile illustrates the workflow on first use.
+Use Node.js 22 to match CI. Run `npm ci`, then `npm run dev` to start the development server. Run `npm test` for model tests, `npm run typecheck` for TypeScript checks, and `npm run build` to type-check and build the static site.
+
+Profiles are stored in this browser's local storage. Clearing site data removes them. A fictional sample profile illustrates the workflow on first use.
 
 ## GitHub Pages
 

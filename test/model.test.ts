@@ -12,7 +12,8 @@ import {
   parseReply,
   reviewedModel,
   saveDecisionResult,
-} from "../src/model.js";
+} from "../src/model.ts";
+import type { DecisionPrediction, Observation } from "../src/model.ts";
 
 const [person] = initialPeople();
 const { hypotheses, rules } = getCognitionModel(person);
@@ -23,7 +24,7 @@ const observation = {
   situation: "The team was about to release a change.",
   involvement: "Alex argued for piloting the rollout.",
   date: "2026-11-27",
-};
+} satisfies Observation;
 const reply = {
   version: 2,
   personId: person.id,
@@ -31,6 +32,31 @@ const reply = {
   hypotheses,
   rules,
 };
+const decisionQuestion = {
+  id: "q1",
+  text: "Should Alex accept the role?",
+  createdAt: "2026-11-27",
+};
+const decisionReply: DecisionPrediction = {
+  version: 1,
+  personId: person.id,
+  questionId: decisionQuestion.id,
+  prediction: "Ask for details first",
+  rationale: "Past behavior supports it",
+  alternatives: ["Accept immediately"],
+  uncertainty: "Role details are unknown",
+  dimensions: Object.fromEntries(
+    cognitionDimensions.map((key) => [key, "unknown"]),
+  ) as DecisionPrediction["dimensions"],
+  sources: [person.evidence[0].id],
+};
+const savedDecision = {
+  ...decisionQuestion,
+  prediction: decisionReply,
+  actualChoice: "",
+  outcome: "",
+};
+
 test("a prompt carries the current evidence, hypotheses and exact draft", () => {
   const prompt = makePrompt(person, observation.id, observation);
   for (const item of [
@@ -78,20 +104,8 @@ test("decision prompt includes full context and all cognition dimensions", () =>
 });
 
 test("validates decision identity, shape and evidence references", () => {
-  const question = { id: "q1", text: "Should Alex accept the role?" };
-  const valid = {
-    version: 1,
-    personId: person.id,
-    questionId: question.id,
-    prediction: "Ask for details first",
-    rationale: "Past behavior supports it",
-    alternatives: ["Accept immediately"],
-    uncertainty: "Role details are unknown",
-    dimensions: Object.fromEntries(
-      cognitionDimensions.map((key) => [key, "unknown"]),
-    ),
-    sources: [person.evidence[0].id],
-  };
+  const question = decisionQuestion;
+  const valid = decisionReply;
   assert.deepEqual(
     parseDecisionReply(JSON.stringify(valid), person, question),
     valid,
@@ -121,14 +135,14 @@ test("validates decision identity, shape and evidence references", () => {
 });
 
 test("actual decision result never changes standing cognition or evidence", () => {
-  const decision = { id: "q1", actualChoice: "", outcome: "" };
-  const withDecision = { ...person, decisions: [decision] };
+  const withDecision = { ...person, decisions: [savedDecision] };
   const updated = saveDecisionResult(
     withDecision,
     "q1",
     "Declined",
     "Chose another role",
   );
+  assert.ok(updated.decisions);
   assert.equal(updated.decisions[0].actualChoice, "Declined");
   assert.equal(updated.decisions[0].outcome, "Chose another role");
   assert.equal(updated.evidence, person.evidence);
@@ -151,7 +165,7 @@ test("both prompts carry structured profile details and omit decision history", 
     ...person,
     context: "Former colleague",
     ...profile,
-    decisions: [{ actualChoice: "Only in the decision log" }],
+    decisions: [{ ...savedDecision, actualChoice: "Only in the decision log" }],
   };
   const question = { id: "q2", text: "Which proposal would Alex choose?" };
   for (const prompt of [
@@ -170,7 +184,7 @@ test("both prompts carry structured profile details and omit decision history", 
 
 test("prediction prompts include the model and computed estimates only when selected", () => {
   const question = { id: "q2", text: "What rollout plan will Alex propose?" };
-  const payload = (useModel) =>
+  const payload = (useModel: boolean) =>
     JSON.parse(makeDecisionPrompt(person, question, useModel).split("\n\n")[3]);
   assert.equal(payload(false).cognitionModel, undefined);
   assert.deepEqual(payload(true).cognitionModel.hypotheses, hypotheses);
@@ -187,7 +201,7 @@ test("app computes a Bayesian estimate from matches and counterexamples", () => 
     { occurred: false },
   ]);
   assert.deepEqual(estimate, { alpha: 3, beta: 2, probability: 0.6 });
-  const beta32Cdf = (x) => 4 * x ** 3 - 3 * x ** 4;
+  const beta32Cdf = (x: number) => 4 * x ** 3 - 3 * x ** 4;
   assert.ok(Math.abs(beta32Cdf(interval95[0]) - 0.025) < 1e-10);
   assert.ok(Math.abs(beta32Cdf(interval95[1]) - 0.975) < 1e-10);
   assert.equal(estimateRule([{ occurred: false }]).probability, 1 / 3);
@@ -235,7 +249,7 @@ test("review removes excluded cases and empty rules without changing the origina
 
 test("validates true or false rule outcomes and distinct eligible evidence", () => {
   const valid = { evidenceId: observation.id, occurred: false };
-  const withCases = (cases) =>
+  const withCases = (cases: unknown[]) =>
     JSON.stringify({ ...reply, rules: [{ ...rules[0], cases }] });
   assert.deepEqual(
     parseReply(withCases([valid]), person, observation.id, observation).rules[0]

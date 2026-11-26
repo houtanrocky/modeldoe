@@ -5,9 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "npm run typecheck && vite build",
     "preview": "vite preview",
-    "test": "node --test"
+    "test": "node --experimental-strip-types --test \"test/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "react": "^19.1.0",
@@ -15,6 +16,10 @@
     "lucide-react": "^0.468.0"
   },
   "devDependencies": {
+    "@types/node": "^22.20.7",
+    "@types/react": "^19.3.3",
+    "@types/react-dom": "^19.3.0",
+    "typescript": "~5.9.3",
     "vite": "^6.1.0"
   }
 }

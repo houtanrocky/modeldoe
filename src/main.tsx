@@ -1,4 +1,5 @@
-import React, { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import type { FormEvent, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
@@ -36,8 +37,38 @@ import {
   storageKey,
   types,
   uid,
-} from "./model";
+} from "./model.ts";
+import type {
+  CognitionModel,
+  DecisionPrediction,
+  Degree,
+  Hypothesis as HypothesisData,
+  Observation,
+  ObservationType,
+  Person,
+  Rule,
+} from "./model.ts";
 import "./style.css";
+
+type DialogStep = "draft" | "reply" | "review" | "saved";
+type ModalName =
+  | ""
+  | "new"
+  | "edit"
+  | "guide"
+  | "update"
+  | "model"
+  | "decision"
+  | `resolve:${string}`;
+
+interface PersonDialogProps {
+  person: Person;
+  close: () => void;
+  save: (person: Person) => void;
+  saveError: string;
+}
+
+const confidenceFilters = ["All", ...levels] as const;
 
 const evidenceIcons = {
   Quote: MessageSquareQuote,
@@ -45,17 +76,17 @@ const evidenceIcons = {
   Decision: GitBranch,
   Inference: BrainCircuit,
 };
-const dateLabel = (value) =>
+const dateLabel = (value: string) =>
   new Date(value.slice(0, 10) + "T12:00:00").toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
   });
 
 function Terrain() {
-  const point = (i, j) => {
+  const point = (i: number, j: number) => {
     const x = i / 50,
       y = j / 30;
-    const peak = (cx, cy, wx, wy, h) =>
+    const peak = (cx: number, cy: number, wx: number, wy: number, h: number) =>
       h * Math.exp(-((x - cx) ** 2 / wx + (y - cy) ** 2 / wy));
     const z =
       peak(0.5, 0.5, 0.025, 0.07, 105) +
@@ -70,7 +101,8 @@ function Terrain() {
       (107 + j * 3.0 - i * 0.87 - z).toFixed(1),
     ].join(",");
   };
-  const line = (n, fn) => Array.from({ length: n }, (_, k) => fn(k)).join(" ");
+  const line = (n: number, fn: (index: number) => string) =>
+    Array.from({ length: n }, (_, k) => fn(k)).join(" ");
   return (
     <svg className="terrain" viewBox="0 0 610 215" aria-hidden="true">
       <defs>
@@ -92,20 +124,32 @@ function Terrain() {
   );
 }
 
-function Modal({ title, close, children, step }) {
-  const ref = useRef(null);
+function Modal({
+  title,
+  close,
+  children,
+  step,
+}: {
+  title: string;
+  close: () => void;
+  children: ReactNode;
+  step?: DialogStep;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   useEffect(() => {
     const dlg = ref.current;
+    if (!dlg) return;
     dlg.showModal();
     return () => dlg.close();
   }, []);
   useEffect(() => {
     if (!step || step === "draft") return;
     const dialog = ref.current;
+    if (!dialog) return;
     const target =
       dialog.querySelector("textarea") ?? dialog.querySelector("h2");
-    target.focus({ preventScroll: true });
+    target?.focus({ preventScroll: true });
     dialog.scrollTop = 0;
   }, [step]);
   return (
@@ -123,8 +167,14 @@ function Modal({ title, close, children, step }) {
   );
 }
 
-function LearningDialog({ person, close, save, saveError, modelOnly = false }) {
-  const [type, setType] = useState("Quote"),
+function LearningDialog({
+  person,
+  close,
+  save,
+  saveError,
+  modelOnly = false,
+}: PersonDialogProps & { modelOnly?: boolean }) {
+  const [type, setType] = useState<ObservationType>("Quote"),
     [text, setText] = useState(""),
     [id, setId] = useState(uid);
   const [situation, setSituation] = useState("");
@@ -132,9 +182,9 @@ function LearningDialog({ person, close, save, saveError, modelOnly = false }) {
   const [statedReason, setStatedReason] = useState("");
   const [revise, setRevise] = useState(modelOnly);
   const [date] = useState(() => new Date().toISOString()),
-    [step, setStep] = useState("draft"),
+    [step, setStep] = useState<Exclude<DialogStep, "saved">>("draft"),
     [raw, setRaw] = useState(""),
-    [review, setReview] = useState(null),
+    [review, setReview] = useState<CognitionModel<boolean | null> | null>(null),
     [error, setError] = useState(""),
     [copied, setCopied] = useState(false);
   const isDecision = type === "Decision";
@@ -160,7 +210,7 @@ function LearningDialog({ person, close, save, saveError, modelOnly = false }) {
   const reviewEvidence = observation
     ? [...person.evidence, observation]
     : person.evidence;
-  function edit(fn, value) {
+  function edit<T>(fn: (value: T) => void, value: T) {
     fn(value);
     setId(uid());
     setCopied(false);
@@ -181,24 +231,30 @@ function LearningDialog({ person, close, save, saveError, modelOnly = false }) {
       setStep("review");
       setError("");
     } catch (e) {
-      setError(e.message);
+      setError(e instanceof Error ? e.message : String(e));
     }
   }
 
-  function classifyCase(ruleIndex, evidenceId, occurred) {
-    setReview((current) => ({
-      ...current,
-      rules: current.rules.map((rule, index) =>
-        index === ruleIndex
-          ? {
-              ...rule,
-              cases: rule.cases.map((item) =>
-                item.evidenceId === evidenceId ? { ...item, occurred } : item,
-              ),
-            }
-          : rule,
-      ),
-    }));
+  function classifyCase(
+    ruleIndex: number,
+    evidenceId: string,
+    occurred: boolean | null,
+  ) {
+    setReview((current) =>
+      current && {
+        ...current,
+        rules: current.rules.map((rule, index) =>
+          index === ruleIndex
+            ? {
+                ...rule,
+                cases: rule.cases.map((item) =>
+                  item.evidenceId === evidenceId ? { ...item, occurred } : item,
+                ),
+              }
+            : rule,
+        ),
+      },
+    );
   }
   return (
     <Modal
@@ -224,7 +280,10 @@ function LearningDialog({ person, close, save, saveError, modelOnly = false }) {
                 Observation type
                 <select
                   value={type}
-                  onChange={(e) => edit(setType, e.target.value)}
+                  onChange={(e) => {
+                    const next = types.find((type) => type === e.target.value);
+                    if (next) edit(setType, next);
+                  }}
                 >
                   {types.map((t) => (
                     <option key={t}>{t}</option>
@@ -237,7 +296,7 @@ function LearningDialog({ person, close, save, saveError, modelOnly = false }) {
                   : "What did you observe?"}
                 <textarea
                   autoFocus
-                  rows="4"
+                  rows={4}
                   placeholder="Include what happened and the situation around it…"
                   value={text}
                   onChange={(e) => edit(setText, e.target.value)}
@@ -246,7 +305,7 @@ function LearningDialog({ person, close, save, saveError, modelOnly = false }) {
               <label>
                 {isDecision ? "Situation" : "Situation (optional)"}
                 <textarea
-                  rows="2"
+                  rows={2}
                   value={situation}
                   onChange={(e) => edit(setSituation, e.target.value)}
                   placeholder="What was happening, what options were available, and what was at stake?"
@@ -257,7 +316,7 @@ function LearningDialog({ person, close, save, saveError, modelOnly = false }) {
                   <label>
                     How did the person take part or influence the decision?
                     <textarea
-                      rows="2"
+                      rows={2}
                       value={involvement}
                       onChange={(e) => edit(setInvolvement, e.target.value)}
                       placeholder="Describe what they said or did and who made the final choice."
@@ -266,7 +325,7 @@ function LearningDialog({ person, close, save, saveError, modelOnly = false }) {
                   <label>
                     Reason they gave (optional)
                     <textarea
-                      rows="2"
+                      rows={2}
                       value={statedReason}
                       onChange={(e) => edit(setStatedReason, e.target.value)}
                     />
@@ -291,7 +350,7 @@ function LearningDialog({ person, close, save, saveError, modelOnly = false }) {
               </p>
               <details open>
                 <summary>Live prompt</summary>
-                <pre tabIndex="0">{prompt}</pre>
+                <pre tabIndex={0}>{prompt}</pre>
               </details>
             </>
           )}
@@ -332,7 +391,7 @@ function LearningDialog({ person, close, save, saveError, modelOnly = false }) {
             LLM response
             <textarea
               autoFocus
-              rows="10"
+              rows={10}
               value={raw}
               placeholder="Paste the JSON response here…"
               onChange={(e) => setRaw(e.target.value)}
@@ -404,12 +463,17 @@ function LearningDialog({ person, close, save, saveError, modelOnly = false }) {
   );
 }
 
-function TestDecision({ person, close, save, saveError }) {
+function TestDecision({
+  person,
+  close,
+  save,
+  saveError,
+}: Omit<PersonDialogProps, "save"> & { save: (person: Person) => boolean }) {
   const [text, setText] = useState(""),
     [id, setId] = useState(uid),
     [raw, setRaw] = useState("");
-  const [step, setStep] = useState("draft"),
-    [result, setResult] = useState(null),
+  const [step, setStep] = useState<DialogStep>("draft"),
+    [result, setResult] = useState<DecisionPrediction | null>(null),
     [actual, setActual] = useState(""),
     [outcome, setOutcome] = useState(""),
     [error, setError] = useState(""),
@@ -418,7 +482,7 @@ function TestDecision({ person, close, save, saveError }) {
   const [createdAt] = useState(() => new Date().toISOString());
   const question = { id, text: text.trim(), createdAt };
   const prompt = makeDecisionPrompt(person, question, useModel);
-  function change(setValue, value) {
+  function change<T>(setValue: (value: T) => void, value: T) {
     setValue(value);
     setId(uid());
     setRaw("");
@@ -432,7 +496,7 @@ function TestDecision({ person, close, save, saveError }) {
       setStep("review");
       setError("");
     } catch (e) {
-      setError(e.message);
+      setError(e instanceof Error ? e.message : String(e));
     }
   }
   async function copy() {
@@ -461,7 +525,7 @@ function TestDecision({ person, close, save, saveError }) {
             What question or choice is this person facing?
             <textarea
               autoFocus
-              rows="4"
+              rows={4}
               value={text}
               onChange={(e) => change(setText, e.target.value)}
               placeholder="Describe the decision and relevant circumstances…"
@@ -477,7 +541,7 @@ function TestDecision({ person, close, save, saveError }) {
           </label>
           <details open>
             <summary>Live prompt</summary>
-            <pre tabIndex="0">{prompt}</pre>
+            <pre tabIndex={0}>{prompt}</pre>
           </details>
           <div className="actions">
             <button disabled={!text.trim()} onClick={copy}>
@@ -500,7 +564,7 @@ function TestDecision({ person, close, save, saveError }) {
             LLM response
             <textarea
               autoFocus
-              rows="10"
+              rows={10}
               value={raw}
               onChange={(e) => setRaw(e.target.value)}
               placeholder="Paste the JSON prediction…"
@@ -553,7 +617,7 @@ function TestDecision({ person, close, save, saveError }) {
             What choice was actually made?
             <textarea
               autoFocus
-              rows="3"
+              rows={3}
               value={actual}
               onChange={(e) => setActual(e.target.value)}
             />
@@ -561,7 +625,7 @@ function TestDecision({ person, close, save, saveError }) {
           <label>
             What happened afterward? (optional)
             <textarea
-              rows="3"
+              rows={3}
               value={outcome}
               onChange={(e) => setOutcome(e.target.value)}
             />
@@ -587,10 +651,16 @@ function TestDecision({ person, close, save, saveError }) {
   );
 }
 
-function PredictionReasoning({ prediction, evidence }) {
+function PredictionReasoning({
+  prediction,
+  evidence,
+}: {
+  prediction: DecisionPrediction;
+  evidence: Observation[];
+}) {
   const sources = [...new Set(prediction.sources)]
     .map((id) => evidence.find((item) => item.id === id))
-    .filter(Boolean);
+    .filter((item) => item !== undefined);
   return (
     <div className="prediction-reasoning">
       <p>
@@ -635,12 +705,19 @@ function PredictionReasoning({ prediction, evidence }) {
   );
 }
 
-function ResolveDecision({ person, decisionId, close, save, saveError }) {
+function ResolveDecision({
+  person,
+  decisionId,
+  close,
+  save,
+  saveError,
+}: PersonDialogProps & { decisionId: string }) {
   const decision = (person.decisions || []).find(
     (item) => item.id === decisionId,
   );
   const [actual, setActual] = useState(""),
     [outcome, setOutcome] = useState("");
+  if (!decision) return null;
   return (
     <Modal title="Record decision result" close={close}>
       <p>{decision.text}</p>
@@ -651,7 +728,7 @@ function ResolveDecision({ person, decisionId, close, save, saveError }) {
         What choice was actually made?
         <textarea
           autoFocus
-          rows="3"
+          rows={3}
           value={actual}
           onChange={(e) => setActual(e.target.value)}
         />
@@ -659,7 +736,7 @@ function ResolveDecision({ person, decisionId, close, save, saveError }) {
       <label>
         What happened afterward? (optional)
         <textarea
-          rows="3"
+          rows={3}
           value={outcome}
           onChange={(e) => setOutcome(e.target.value)}
         />
@@ -680,7 +757,7 @@ function ResolveDecision({ person, decisionId, close, save, saveError }) {
   );
 }
 
-function ObservationText({ item }) {
+function ObservationText({ item }: { item: Observation }) {
   return (
     <>
       <p className={item.type === "Quote" ? "quote" : undefined}>
@@ -705,16 +782,30 @@ function ObservationText({ item }) {
   );
 }
 
-function rulePercent(value) {
+function rulePercent(value: number) {
   if (value < 0.005) return "<1%";
   if (value >= 0.995) return ">99%";
   return `${Math.round(value * 100)}%`;
 }
 
-function RuleList({ rules, evidence, classifyCase }) {
+function RuleList({
+  rules,
+  evidence,
+  classifyCase,
+}: {
+  rules: Rule<boolean | null>[];
+  evidence: Observation[];
+  classifyCase?: (
+    ruleIndex: number,
+    evidenceId: string,
+    occurred: boolean | null,
+  ) => void;
+}) {
   const records = new Map(evidence.map((item) => [item.id, item]));
   return rules.map((rule, index) => {
-    const included = rule.cases.filter(({ occurred }) => occurred !== null);
+    const included = rule.cases.filter(
+      (item): item is Rule["cases"][number] => item.occurred !== null,
+    );
     const count = included.length;
     const estimate = count ? estimateRule(included) : null;
     return (
@@ -785,37 +876,40 @@ function RuleList({ rules, evidence, classifyCase }) {
             </details>
           )}
           <ul className="rule-cases">
-            {rule.cases.map(({ evidenceId, occurred }) => (
-              <li key={evidenceId}>
-                {classifyCase ? (
-                  <label>
-                    Did the person take this action?
-                    <select
-                      value={String(occurred)}
-                      onChange={(event) => {
-                        const value = event.target.value;
-                        classifyCase(
-                          index,
-                          evidenceId,
-                          value === "null" ? null : value === "true",
-                        );
-                      }}
-                    >
-                      <option value="true">Action observed</option>
-                      <option value="false">
-                        Had the opportunity and did something else
-                      </option>
-                      <option value="null">Exclude this case</option>
-                    </select>
-                  </label>
-                ) : (
-                  <strong>
-                    {occurred ? "Action observed" : "Counterexample"}
-                  </strong>
-                )}
-                <ObservationText item={records.get(evidenceId)} />
-              </li>
-            ))}
+            {rule.cases.map(({ evidenceId, occurred }) => {
+              const record = records.get(evidenceId);
+              return (
+                <li key={evidenceId}>
+                  {classifyCase ? (
+                    <label>
+                      Did the person take this action?
+                      <select
+                        value={String(occurred)}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          classifyCase(
+                            index,
+                            evidenceId,
+                            value === "null" ? null : value === "true",
+                          );
+                        }}
+                      >
+                        <option value="true">Action observed</option>
+                        <option value="false">
+                          Had the opportunity and did something else
+                        </option>
+                        <option value="null">Exclude this case</option>
+                      </select>
+                    </label>
+                  ) : (
+                    <strong>
+                      {occurred ? "Action observed" : "Counterexample"}
+                    </strong>
+                  )}
+                  {record && <ObservationText item={record} />}
+                </li>
+              );
+            })}
           </ul>
         </div>
       </details>
@@ -823,7 +917,15 @@ function RuleList({ rules, evidence, classifyCase }) {
   });
 }
 
-function Hypothesis({ h, index, evidence }) {
+function Hypothesis({
+  h,
+  index,
+  evidence,
+}: {
+  h: HypothesisData;
+  index: number;
+  evidence: Observation[];
+}) {
   const Icon = [Boxes, GitBranch, Activity][index % 3];
   return (
     <details className="hyp">
@@ -874,7 +976,12 @@ function Hypothesis({ h, index, evidence }) {
   );
 }
 
-function PersonForm({ person, close, save, saveError }) {
+function PersonForm({
+  person,
+  close,
+  save,
+  saveError,
+}: Omit<PersonDialogProps, "person"> & { person?: Person }) {
   const [name, setName] = useState(person?.name ?? "");
   const [context, setContext] = useState(person?.context ?? "");
   const [job, setJob] = useState(person?.job ?? "");
@@ -885,7 +992,7 @@ function PersonForm({ person, close, save, saveError }) {
     (person?.degrees ?? []).map((degree) => ({ ...degree, key: uid() })),
   );
 
-  function changeDegree(key, field, value) {
+  function changeDegree(key: string, field: keyof Degree, value: string) {
     setDegrees((current) =>
       current.map((row) =>
         row.key === key ? { ...row, [field]: value } : row,
@@ -893,7 +1000,7 @@ function PersonForm({ person, close, save, saveError }) {
     );
   }
 
-  function submit(event) {
+  function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!name.trim()) return;
     const education = degrees
@@ -927,7 +1034,7 @@ function PersonForm({ person, close, save, saveError }) {
             required
             value={name}
             onChange={(e) => setName(e.target.value)}
-            maxLength="100"
+            maxLength={100}
           />
         </label>
         <label>
@@ -1017,7 +1124,7 @@ function PersonForm({ person, close, save, saveError }) {
         <label>
           Decision-relevant personality traits (optional)
           <textarea
-            rows="3"
+            rows={3}
             value={traits}
             onChange={(e) => setTraits(e.target.value)}
             aria-describedby="traits-help"
@@ -1041,7 +1148,7 @@ function PersonForm({ person, close, save, saveError }) {
   );
 }
 
-function ProfileDetails({ person, edit }) {
+function ProfileDetails({ person, edit }: { person: Person; edit: () => void }) {
   const { job, age, height, context, degrees = [], traits = [] } = person;
   const details = [
     ["Job", job],
@@ -1097,20 +1204,20 @@ function ProfileDetails({ person, edit }) {
 }
 
 function App() {
-  const [people, setPeople] = useState(() => {
+  const [people, setPeople] = useState<Person[]>(() => {
     const data = localStorage.getItem(storageKey);
-    return data ? JSON.parse(data) : initialPeople();
+    return data ? (JSON.parse(data) as Person[]) : initialPeople();
   });
   const [selected, S] = useState(people[0].id),
-    [modal, M] = useState(""),
-    [filter, F] = useState("All"),
+    [modal, M] = useState<ModalName>(""),
+    [filter, F] = useState<(typeof confidenceFilters)[number]>("All"),
     [filters, showFilters] = useState(false),
     [all, A] = useState(false),
     [error, E] = useState("");
-  const person = people.find((p) => p.id === selected);
+  const person = people.find((p) => p.id === selected) ?? people[0];
   const { evidence } = person;
   const { hypotheses, rules } = getCognitionModel(person);
-  function persist(next) {
+  function persist(next: Person[]) {
     try {
       const previous = localStorage.getItem(storageKey);
       if (previous && previous !== JSON.stringify(people)) {
@@ -1128,7 +1235,7 @@ function App() {
       return false;
     }
   }
-  function select(id) {
+  function select(id: string) {
     S(id);
     A(false);
     F("All");
@@ -1270,8 +1377,16 @@ function App() {
             {filters && (
               <label className="filterrow">
                 Confidence
-                <select value={filter} onChange={(e) => F(e.target.value)}>
-                  {["All", ...levels].map((l) => (
+                <select
+                  value={filter}
+                  onChange={(e) => {
+                    const next = confidenceFilters.find(
+                      (value) => value === e.target.value,
+                    );
+                    if (next) F(next);
+                  }}
+                >
+                  {confidenceFilters.map((l) => (
                     <option key={l}>{l}</option>
                   ))}
                 </select>
@@ -1385,7 +1500,7 @@ function App() {
                           )}
                         </>
                       ) : (
-                        <button onClick={() => M("resolve:" + decision.id)}>
+                        <button onClick={() => M(`resolve:${decision.id}`)}>
                           Record actual result
                         </button>
                       )}
@@ -1477,4 +1592,6 @@ function App() {
     </>
   );
 }
-createRoot(document.getElementById("root")).render(<App />);
+const root = document.getElementById("root");
+if (!root) throw new Error("Missing application root.");
+createRoot(root).render(<App />);
