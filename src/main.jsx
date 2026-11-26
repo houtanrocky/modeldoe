@@ -31,6 +31,7 @@ import {
   makePrompt,
   parseDecisionReply,
   parseReply,
+  reviewedModel,
   saveDecisionResult,
   storageKey,
   types,
@@ -91,7 +92,7 @@ function Terrain() {
   );
 }
 
-function Modal({ title, close, children }) {
+function Modal({ title, close, children, step }) {
   const ref = useRef(null);
   const titleId = useId();
   useEffect(() => {
@@ -99,10 +100,20 @@ function Modal({ title, close, children }) {
     dlg.showModal();
     return () => dlg.close();
   }, []);
+  useEffect(() => {
+    if (!step || step === "draft") return;
+    const dialog = ref.current;
+    const target =
+      dialog.querySelector("textarea") ?? dialog.querySelector("h2");
+    target.focus({ preventScroll: true });
+    dialog.scrollTop = 0;
+  }, [step]);
   return (
     <dialog ref={ref} onCancel={close} aria-labelledby={titleId}>
       <div className="modalhead">
-        <h2 id={titleId}>{title}</h2>
+        <h2 id={titleId} tabIndex={-1}>
+          {title}
+        </h2>
         <button className="iconbtn" aria-label="Close dialog" onClick={close}>
           <X size={19} />
         </button>
@@ -173,10 +184,27 @@ function LearningDialog({ person, close, save, saveError, modelOnly = false }) {
       setError(e.message);
     }
   }
+
+  function classifyCase(ruleIndex, evidenceId, occurred) {
+    setReview((current) => ({
+      ...current,
+      rules: current.rules.map((rule, index) =>
+        index === ruleIndex
+          ? {
+              ...rule,
+              cases: rule.cases.map((item) =>
+                item.evidenceId === evidenceId ? { ...item, occurred } : item,
+              ),
+            }
+          : rule,
+      ),
+    }));
+  }
   return (
     <Modal
       title={modelOnly ? "Revise cognition model" : "Add observation"}
       close={close}
+      step={step}
     >
       <p className="sub">
         {person.name} /{" "}
@@ -256,10 +284,16 @@ function LearningDialog({ person, close, save, saveError, modelOnly = false }) {
             </>
           )}
           {revise && (
-            <details open>
-              <summary>Live prompt</summary>
-              <pre tabIndex="0">{prompt}</pre>
-            </details>
+            <>
+              <p className="sub">
+                Copy the prompt into your preferred AI tool, then paste its JSON
+                response here.
+              </p>
+              <details open>
+                <summary>Live prompt</summary>
+                <pre tabIndex="0">{prompt}</pre>
+              </details>
+            </>
           )}
           <div className="actions">
             {!revise && (
@@ -332,7 +366,15 @@ function LearningDialog({ person, close, save, saveError, modelOnly = false }) {
             <Hypothesis key={i} h={h} index={i} evidence={reviewEvidence} />
           ))}
           <h3>Revised Bayesian rules ({review.rules.length})</h3>
-          <RuleList rules={review.rules} evidence={reviewEvidence} showCases />
+          <p className="sub">
+            Check that each record describes a comparable situation and the
+            person had a chance to take the action.
+          </p>
+          <RuleList
+            rules={review.rules}
+            evidence={reviewEvidence}
+            classifyCase={classifyCase}
+          />
           <p className="sub">
             Applying this revision replaces the saved hypotheses and rules with
             the sets shown above.
@@ -342,7 +384,12 @@ function LearningDialog({ person, close, save, saveError, modelOnly = false }) {
             <button
               className="primary"
               onClick={() =>
-                save(applyLearning(person, { observation, model: review }))
+                save(
+                  applyLearning(person, {
+                    observation,
+                    model: reviewedModel(review),
+                  }),
+                )
               }
             >
               {modelOnly
@@ -397,7 +444,7 @@ function TestDecision({ person, close, save, saveError }) {
     }
   }
   return (
-    <Modal title="Test a decision" close={close}>
+    <Modal title="Test a decision" close={close} step={step}>
       <p className="sub">
         {person.name} /{" "}
         {step === "draft"
@@ -471,22 +518,7 @@ function TestDecision({ person, close, save, saveError }) {
         <>
           <h3>Likely choice</h3>
           <p>{result.prediction}</p>
-          <h3>Why</h3>
-          <p>{result.rationale}</p>
-          <h3>Alternatives</h3>
-          {result.alternatives.map((v, i) => (
-            <p key={i}>{v}</p>
-          ))}
-          <h3>Uncertainty</h3>
-          <p>{result.uncertainty}</p>
-          <details>
-            <summary>Cognition dimensions</summary>
-            {Object.entries(result.dimensions).map(([key, value]) => (
-              <p key={key}>
-                <b>{key}</b> · {value}
-              </p>
-            ))}
-          </details>
+          <PredictionReasoning prediction={result} evidence={person.evidence} />
           <div className="actions">
             <button onClick={() => setStep("reply")}>Back</button>
             <button
@@ -552,6 +584,54 @@ function TestDecision({ person, close, save, saveError }) {
       {error && <p role="alert">{error}</p>}
       {saveError && <p role="alert">{saveError}</p>}
     </Modal>
+  );
+}
+
+function PredictionReasoning({ prediction, evidence }) {
+  const sources = [...new Set(prediction.sources)]
+    .map((id) => evidence.find((item) => item.id === id))
+    .filter(Boolean);
+  return (
+    <div className="prediction-reasoning">
+      <p>
+        <strong>Rationale</strong> {prediction.rationale}
+      </p>
+      <p>
+        <strong>Uncertainty</strong> {prediction.uncertainty}
+      </p>
+      {prediction.alternatives.length > 0 && (
+        <div>
+          <strong>Alternatives</strong>
+          <ul>
+            {prediction.alternatives.map((value, index) => (
+              <li key={index}>{value}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <details>
+        <summary>Cited evidence ({sources.length})</summary>
+        {sources.length ? (
+          <ul>
+            {sources.map((item) => (
+              <li key={item.id}>
+                <ObservationText item={item} />
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p>No observations were cited.</p>
+        )}
+      </details>
+      <details>
+        <summary>Cognition dimensions</summary>
+        {Object.entries(prediction.dimensions).map(([key, value]) => (
+          <p key={key}>
+            <strong>{key}</strong> · {value}
+          </p>
+        ))}
+      </details>
+    </div>
   );
 }
 
@@ -625,21 +705,34 @@ function ObservationText({ item }) {
   );
 }
 
-function RuleList({ rules, evidence, showCases = false }) {
+function rulePercent(value) {
+  if (value < 0.005) return "<1%";
+  if (value >= 0.995) return ">99%";
+  return `${Math.round(value * 100)}%`;
+}
+
+function RuleList({ rules, evidence, classifyCase }) {
   const records = new Map(evidence.map((item) => [item.id, item]));
   return rules.map((rule, index) => {
-    const { alpha, beta, probability } = estimateRule(rule.cases);
-    const count = rule.cases.length;
+    const included = rule.cases.filter(({ occurred }) => occurred !== null);
+    const count = included.length;
+    const estimate = count ? estimateRule(included) : null;
     return (
-      <details className="hyp" key={index} open={showCases || undefined}>
+      <details
+        className="hyp"
+        key={index}
+        open={classifyCase ? true : undefined}
+      >
         <summary>
           <div className="cardtop">
             <span className="patternicon">
               <Activity size={20} />
             </span>
-            <span className="confidence">
-              {Math.round(probability * 100)}% estimated chance
-            </span>
+            {estimate && (
+              <span className="confidence">
+                {rulePercent(estimate.probability)} estimated chance
+              </span>
+            )}
           </div>
           <h3>{rule.title}</h3>
           <p>
@@ -648,10 +741,28 @@ function RuleList({ rules, evidence, showCases = false }) {
           <p>
             <strong>Action</strong> {rule.action}
           </p>
+          {estimate && (
+            <>
+              <div className="rule-range" aria-hidden="true">
+                <span
+                  style={{
+                    left: `${estimate.interval95[0] * 100}%`,
+                    width: `${(estimate.interval95[1] - estimate.interval95[0]) * 100}%`,
+                  }}
+                />
+                <i style={{ left: `${estimate.probability * 100}%` }} />
+              </div>
+              <p className="rule-interval">
+                {estimate.interval95.map(rulePercent).join(" to ")} · 95%
+                credible interval
+              </p>
+            </>
+          )}
           <div className="cardfoot">
             <span>
-              {alpha - 1} of {count} cited {count === 1 ? "case" : "cases"}{" "}
-              showed the action
+              {estimate
+                ? `${estimate.alpha - 1} of ${count} ${count === 1 ? "case" : "cases"} showed the action`
+                : "No included cases. This rule will be omitted."}
             </span>
             <span className="expand">
               Cases <ChevronDown size={14} />
@@ -659,15 +770,49 @@ function RuleList({ rules, evidence, showCases = false }) {
           </div>
         </summary>
         <div className="detail">
-          <p>
-            Posterior Beta({alpha}, {beta}) with a Beta(1, 1) prior.
-          </p>
+          {estimate && (
+            <details className="rule-method">
+              <summary>How the estimate works</summary>
+              <p>
+                The interval describes uncertainty in the underlying chance,
+                assuming these cases are comparable and independent. It does not
+                account for missing or selectively recorded cases.
+              </p>
+              <p>
+                Posterior Beta({estimate.alpha}, {estimate.beta}), starting from
+                a uniform Beta(1, 1) prior.
+              </p>
+            </details>
+          )}
           <ul className="rule-cases">
             {rule.cases.map(({ evidenceId, occurred }) => (
               <li key={evidenceId}>
-                <strong>
-                  {occurred ? "Action observed" : "Counterexample"}
-                </strong>
+                {classifyCase ? (
+                  <label>
+                    Did the person take this action?
+                    <select
+                      value={String(occurred)}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        classifyCase(
+                          index,
+                          evidenceId,
+                          value === "null" ? null : value === "true",
+                        );
+                      }}
+                    >
+                      <option value="true">Action observed</option>
+                      <option value="false">
+                        Had the opportunity and did something else
+                      </option>
+                      <option value="null">Exclude this case</option>
+                    </select>
+                  </label>
+                ) : (
+                  <strong>
+                    {occurred ? "Action observed" : "Counterexample"}
+                  </strong>
+                )}
                 <ObservationText item={records.get(evidenceId)} />
               </li>
             ))}
@@ -1081,8 +1226,13 @@ function App() {
             M("edit");
           }}
         />
+        <nav className="workspace-jump" aria-label="Jump to workspace section">
+          <a href="#cognition-model">Model</a>
+          <a href="#observation-log">Observations</a>
+          <a href="#decision-predictions">Predictions</a>
+        </nav>
         <div className="columns">
-          <section>
+          <section id="cognition-model" tabIndex={-1}>
             <div className="sectionhead">
               <div className="sectiontitle">
                 <Network /> <h2>Cognition model</h2>
@@ -1144,7 +1294,7 @@ function App() {
             )}
           </section>
           <div>
-            <section>
+            <section id="observation-log" tabIndex={-1}>
               <div className="sectionhead">
                 <div className="sectiontitle">
                   <AudioLines />
@@ -1185,7 +1335,11 @@ function App() {
                 )}
               </div>
             </section>
-            <section className="prediction-log">
+            <section
+              id="decision-predictions"
+              className="prediction-log"
+              tabIndex={-1}
+            >
               <div className="sectionhead">
                 <div className="sectiontitle">
                   <Sparkles />
@@ -1211,6 +1365,13 @@ function App() {
                         <strong>Predicted</strong>{" "}
                         {decision.prediction.prediction}
                       </p>
+                      <details className="saved-reasoning">
+                        <summary>Prediction details</summary>
+                        <PredictionReasoning
+                          prediction={decision.prediction}
+                          evidence={evidence}
+                        />
+                      </details>
                       {decision.actualChoice ? (
                         <>
                           <p>

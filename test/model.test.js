@@ -10,6 +10,7 @@ import {
   makePrompt,
   parseDecisionReply,
   parseReply,
+  reviewedModel,
   saveDecisionResult,
 } from "../src/model.js";
 
@@ -173,23 +174,63 @@ test("prediction prompts include the model and computed estimates only when sele
     JSON.parse(makeDecisionPrompt(person, question, useModel).split("\n\n")[3]);
   assert.equal(payload(false).cognitionModel, undefined);
   assert.deepEqual(payload(true).cognitionModel.hypotheses, hypotheses);
-  assert.deepEqual(payload(true).cognitionModel.rules[0].estimate, {
-    alpha: 3,
-    beta: 1,
-    probability: 0.75,
-  });
+  assert.deepEqual(
+    payload(true).cognitionModel.rules[0].estimate,
+    estimateRule(rules[0].cases),
+  );
 });
 
 test("app computes a Bayesian estimate from matches and counterexamples", () => {
-  assert.deepEqual(
-    estimateRule([{ occurred: true }, { occurred: true }, { occurred: false }]),
-    {
-      alpha: 3,
-      beta: 2,
-      probability: 0.6,
-    },
-  );
+  const { interval95, ...estimate } = estimateRule([
+    { occurred: true },
+    { occurred: true },
+    { occurred: false },
+  ]);
+  assert.deepEqual(estimate, { alpha: 3, beta: 2, probability: 0.6 });
+  const beta32Cdf = (x) => 4 * x ** 3 - 3 * x ** 4;
+  assert.ok(Math.abs(beta32Cdf(interval95[0]) - 0.025) < 1e-10);
+  assert.ok(Math.abs(beta32Cdf(interval95[1]) - 0.975) < 1e-10);
   assert.equal(estimateRule([{ occurred: false }]).probability, 1 / 3);
+});
+
+test("credible intervals agree with analytic bounds for sparse and extreme counts", () => {
+  const prior = estimateRule([]);
+  assert.ok(Math.abs(prior.interval95[0] - 0.025) < 1e-10);
+  assert.ok(Math.abs(prior.interval95[1] - 0.975) < 1e-10);
+  for (const n of [2, 10_000]) {
+    const observed = estimateRule(Array(n).fill({ occurred: true })).interval95;
+    const absent = estimateRule(Array(n).fill({ occurred: false })).interval95;
+    for (const [i, quantile] of [0.025, 0.975].entries()) {
+      assert.ok(Math.abs(observed[i] - quantile ** (1 / (n + 1))) < 1e-10);
+      assert.ok(
+        Math.abs(absent[i] - (1 - (1 - quantile) ** (1 / (n + 1)))) < 1e-10,
+      );
+    }
+  }
+});
+
+test("review removes excluded cases and empty rules without changing the original model", () => {
+  const draft = {
+    hypotheses,
+    rules: [
+      {
+        ...rules[0],
+        cases: [
+          { evidenceId: "e3", occurred: false },
+          { evidenceId: "e6", occurred: null },
+        ],
+      },
+      { ...rules[0], cases: [{ evidenceId: "e3", occurred: null }] },
+    ],
+  };
+  const model = reviewedModel(draft);
+  assert.equal(model.rules.length, 1);
+  assert.deepEqual(model.rules[0].cases, [
+    { evidenceId: "e3", occurred: false },
+  ]);
+  assert.equal(estimateRule(model.rules[0].cases).probability, 1 / 3);
+  assert.equal(draft.rules[0].cases.length, 2);
+  assert.equal(rules[0].cases[0].occurred, true);
 });
 
 test("validates true or false rule outcomes and distinct eligible evidence", () => {

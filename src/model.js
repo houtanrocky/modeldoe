@@ -42,11 +42,63 @@ export function getCognitionModel(person) {
   );
 }
 
+// For integer a and b, the Beta CDF is the upper tail of Binomial(a + b - 1, x).
+// Sum the binomial masses relative to the mode to avoid underflow.
+function betaCdf(x, a, b) {
+  const trials = a + b - 1;
+  const mode = Math.floor((trials + 1) * x);
+  const odds = x / (1 - x);
+  let total = 1;
+  let tail = mode >= a ? 1 : 0;
+  let weight = 1;
+  for (let k = mode; k > 0; k--) {
+    weight *= k / ((trials - k + 1) * odds);
+    total += weight;
+    if (k - 1 >= a) tail += weight;
+  }
+  weight = 1;
+  for (let k = mode; k < trials; k++) {
+    weight *= ((trials - k) / (k + 1)) * odds;
+    total += weight;
+    if (k + 1 >= a) tail += weight;
+  }
+  return tail / total;
+}
+
+function betaQuantile(target, alpha, beta) {
+  let low = 0;
+  let high = 1;
+  for (let i = 0; i < 40; i++) {
+    const midpoint = (low + high) / 2;
+    if (betaCdf(midpoint, alpha, beta) < target) low = midpoint;
+    else high = midpoint;
+  }
+  return (low + high) / 2;
+}
+
 export function estimateRule(cases) {
   const occurred = cases.filter((item) => item.occurred).length;
   const alpha = 1 + occurred;
   const beta = 1 + cases.length - occurred;
-  return { alpha, beta, probability: alpha / (alpha + beta) };
+  return {
+    alpha,
+    beta,
+    probability: alpha / (alpha + beta),
+    interval95: [
+      betaQuantile(0.025, alpha, beta),
+      betaQuantile(0.975, alpha, beta),
+    ],
+  };
+}
+
+export function reviewedModel(model) {
+  const rules = model.rules
+    .map((rule) => ({
+      ...rule,
+      cases: rule.cases.filter(({ occurred }) => occurred !== null),
+    }))
+    .filter((rule) => rule.cases.length > 0);
+  return { ...model, rules };
 }
 
 export function applyLearning(person, { observation, model }) {
@@ -179,7 +231,7 @@ export function makeDecisionPrompt(person, question, useModel = false) {
     JSON.stringify(data, null, 2),
     ...(useModel
       ? [
-          "Use a rule estimate only when its situation applies. Treat small samples cautiously. Each estimate describes one action in one situation and estimates cannot be combined as if independent. Return a prediction for this question only.",
+          "Use a rule estimate only when its situation applies. The 95% interval describes uncertainty about the underlying chance under the rule's assumptions. If you report a rule estimate, include its case count and interval. Do not invent numerical odds, combine overlapping rules, or count the cited observations again as new data. Return a prediction for this question only.",
         ]
       : []),
     "Return this shape. Keep prediction, rationale, alternatives and uncertainty grounded in cited evidence IDs. Use an empty sources array when evidence is unavailable.",
@@ -287,7 +339,7 @@ export function makePrompt(person, updateId, observation = null) {
       2,
     ),
     "Return only one JSON object containing the COMPLETE replacement hypotheses and rules arrays. Use only supplied evidence IDs. Hypothesis confidence must be Low, Moderate or High. An empty array is allowed when evidence is insufficient.",
-    "Each rule specifies a concrete situation and one observable action. Cite distinct Decision or Behavior records from genuinely comparable situations. Include both examples and counterexamples where available. Set occurred to true when the action was observed, and false when the situation applied but another action was observed. Omit ambiguous cases and duplicate accounts of the same event. A rule needs at least one classifiable case. The app calculates the probabilities.",
+    "Each rule specifies a concrete situation and one observable action by this person. Cite distinct Decision or Behavior records from genuinely comparable situations. Include all classifiable cases, including counterexamples. Set occurred to true when the person took the action, and false only when they had the opportunity and were observed doing something else instead. An unmentioned action, a different person's decision, and missing context are not negative evidence. Omit uncertain outcomes and duplicate accounts of the same event. A rule needs at least one classifiable case. The app calculates the probabilities.",
     JSON.stringify(
       {
         version: 2,
